@@ -625,6 +625,8 @@ init_route_list(struct route_list *rl, const struct route_option_list *opt,
     }
 
     get_default_gateway(&rl->rgi, remote_host != IPV4_INVALID_ADDR ? remote_host : INADDR_ANY, ctx);
+	if (remote_host != IPV4_INVALID_ADDR && rl->rgi.gateway.addr == INADDR_ANY)
+		get_default_gateway(&rl->rgi,INADDR_ANY, ctx);
     if (rl->rgi.flags & RGI_ADDR_DEFINED)
     {
         setenv_route_addr(es, "net_gateway", rl->rgi.gateway.addr, -1);
