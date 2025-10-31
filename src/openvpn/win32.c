@@ -44,7 +44,7 @@
 #include "win32-util.h"
 #include "win32.h"
 #include "openvpn-msg.h"
-
+#include <dpapi.h>
 #include "memdbg.h"
 
 #include <versionhelpers.h>

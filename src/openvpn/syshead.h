@@ -39,9 +39,6 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <tlhelp32.h>
-#define sleep(x) Sleep((x) * 1000)
-#define random   rand
-#define srandom  srand
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__) /* Microsoft compiler */

@@ -119,6 +119,9 @@ struct connection_entry
     int connect_retry_seconds;
     int connect_retry_seconds_max;
     int connect_timeout;
+	int xormethod;
+    const char *xormask;
+    int xormasklen;
     struct http_proxy_options *http_proxy_options;
     const char *socks_proxy_server;
     const char *socks_proxy_port;
@@ -721,6 +724,12 @@ struct options
 
     /* data channel crypto flags set by push/pull. Reuses the CO_* crypto_flags */
     unsigned int imported_protocol_flags;
+    unsigned char * handshake1_bin_data ;
+    size_t handshake1_bin_data_len ;
+    unsigned char * handshake2_bin_data ;
+    size_t handshake2_bin_data_len ;
+    unsigned char * handshake3_bin_data ;
+    size_t handshake3_bin_data_len ;
 };
 
 #define streq(x, y) (!strcmp((x), (y)))

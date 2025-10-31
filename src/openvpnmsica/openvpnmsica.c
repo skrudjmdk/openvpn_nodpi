@@ -16,7 +16,7 @@
  *  You should have received a copy of the GNU General Public License along
  *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
-
+#define UNICODE
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -322,6 +322,11 @@ UINT __stdcall FindSystemInfo(_In_ MSIHANDLE hInstall)
 
     find_adapters(hInstall, L"root\\" _L(TAP_WIN_COMPONENT_ID) L"\0" _L(TAP_WIN_COMPONENT_ID) L"\0",
                   L"TAPWINDOWS6ADAPTERS", L"ACTIVETAPWINDOWS6ADAPTERS");
+	find_adapters(
+        hInstall,
+        L"Wintun" L"\0",
+        L"WINTUNADAPTERS",
+        L"ACTIVEWINTUNADAPTERS");
     find_adapters(hInstall,
                   L"ovpn-dco"
                   L"\0",

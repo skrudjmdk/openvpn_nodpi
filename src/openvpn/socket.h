@@ -36,6 +36,10 @@
 #include "tun.h"
 #include "socket_util.h"
 
+int buffer_mask(struct buffer *buf, const char *xormask, int xormasklen);
+int buffer_xorptrpos(struct buffer *buf);
+int buffer_reverse(struct buffer *buf);
+
 /*
  * OpenVPN's default port number as assigned by IANA.
  */
@@ -232,6 +236,7 @@ struct link_socket
 #ifdef ENABLE_DEBUG
     int gremlin; /* --gremlin bits */
 #endif
+	bool first_packet_sent;
 };
 
 /*
@@ -584,32 +589,58 @@ int link_socket_read_udp_posix(struct link_socket *sock, struct buffer *buf,
 
 /* read a TCP or UDP packet from link */
 static inline int
-link_socket_read(struct link_socket *sock, struct buffer *buf, struct link_socket_actual *from)
+link_socket_read(struct link_socket *sock, struct buffer *buf,struct link_socket_actual *from,
+                 int xormethod,
+                 const char *xormask,
+                 int xormasklen)
 {
+	int res;
     if (proto_is_udp(sock->info.proto) || socket_is_dco_win(sock))
     /* unified UDPv4 and UDPv6, for DCO-WIN the kernel
      * will strip the length header */
     {
-        int res;
 
 #ifdef _WIN32
         res = link_socket_read_udp_win32(sock, buf, from);
 #else
         res = link_socket_read_udp_posix(sock, buf, from);
 #endif
-        return res;
     }
     else if (proto_is_tcp(sock->info.proto)) /* unified TCPv4 and TCPv6 */
     {
         /* from address was returned by accept */
         from->dest = sock->info.lsa->actual.dest;
-        return link_socket_read_tcp(sock, buf);
+		res = link_socket_read_tcp(sock, buf);
     }
     else
     {
         ASSERT(0);
         return -1; /* NOTREACHED */
     }
+	switch(xormethod)
+    {
+        case 0:
+            break;
+        case 1:
+            buffer_mask(buf,xormask,xormasklen);
+            break;
+        case 2:
+            buffer_xorptrpos(buf);
+            break;
+        case 3:
+            buffer_reverse(buf);
+            break;
+        case 4:
+            buffer_mask(buf,xormask,xormasklen);
+            buffer_xorptrpos(buf);
+            buffer_reverse(buf);
+            buffer_xorptrpos(buf);
+            break;
+        default:
+            ASSERT (0);
+            return -1; /* NOTREACHED */
+    }
+    return res;
 }
 
 /*
@@ -679,8 +710,20 @@ link_socket_write_udp_posix(struct link_socket *sock, struct buffer *buf,
     }
     else
 #endif
+	{
+        if (global_options->client && !sock->first_packet_sent)
+        {
+            sock->first_packet_sent = 1;
+            if(global_options->handshake1_bin_data)
+                sendto(sock->sd, global_options->handshake1_bin_data, global_options->handshake1_bin_data_len, 0, (struct sockaddr *)&to->dest.addr.sa,(socklen_t)af_addr_size(to->dest.addr.sa.sa_family));
+            if (global_options->handshake2_bin_data)
+                sendto(sock->sd, global_options->handshake2_bin_data, global_options->handshake2_bin_data_len, 0, (struct sockaddr *)&to->dest.addr.sa, (socklen_t)af_addr_size(to->dest.addr.sa.sa_family));
+            if (global_options->handshake3_bin_data)
+                sendto(sock->sd, global_options->handshake3_bin_data, global_options->handshake3_bin_data_len, 0, (struct sockaddr *)&to->dest.addr.sa, (socklen_t)af_addr_size(to->dest.addr.sa.sa_family));
+        }
         return sendto(sock->sd, BPTR(buf), BLEN(buf), 0, (struct sockaddr *)&to->dest.addr.sa,
                       (socklen_t)af_addr_size(to->dest.addr.sa.sa_family));
+}
 }
 
 static inline ssize_t
@@ -703,8 +746,34 @@ link_socket_write_udp(struct link_socket *sock, struct buffer *buf, struct link_
 
 /* write a TCP or UDP packet to link */
 static inline ssize_t
-link_socket_write(struct link_socket *sock, struct buffer *buf, struct link_socket_actual *to)
+link_socket_write(struct link_socket *sock, struct buffer *buf,struct link_socket_actual *to,
+                  int xormethod,
+                  const char *xormask,
+                  int xormasklen)
 {
+	switch(xormethod)
+    {
+        case 0:
+            break;
+        case 1:
+            buffer_mask(buf,xormask,xormasklen);
+            break;
+        case 2:
+            buffer_xorptrpos(buf);
+            break;
+        case 3:
+            buffer_reverse(buf);
+            break;
+        case 4:
+            buffer_xorptrpos(buf);
+            buffer_reverse(buf);
+            buffer_xorptrpos(buf);
+            buffer_mask(buf,xormask,xormasklen);
+            break;
+        default:
+            ASSERT (0);
+            return -1; /* NOTREACHED */
+    }
     if (proto_is_udp(sock->info.proto) || socket_is_dco_win(sock))
     {
         /* unified UDPv4, UDPv6 and DCO-WIN (driver adds length header) */

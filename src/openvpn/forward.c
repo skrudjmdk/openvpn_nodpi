@@ -933,7 +933,10 @@ read_incoming_link(struct context *c, struct link_socket *sock)
     c->c2.buf = c->c2.buffers->read_link_buf;
     ASSERT(buf_init(&c->c2.buf, c->c2.frame.buf.headroom));
 
-    status = link_socket_read(sock, &c->c2.buf, &c->c2.from);
+    status = link_socket_read(sock, &c->c2.buf, &c->c2.from,
+                              c->options.ce.xormethod,
+                              c->options.ce.xormask,
+                              c->options.ce.xormasklen);
 
     if (socket_connection_reset(sock, status))
     {
@@ -1312,11 +1315,25 @@ read_incoming_tun(struct context *c)
     c->c2.buf = c->c2.buffers->read_tun_buf;
 
 #ifdef _WIN32
+    if (c->c1.tuntap->backend_driver == WINDOWS_DRIVER_WINTUN)
+    {
+        read_wintun(c->c1.tuntap, &c->c2.buf);
+        if (c->c2.buf.len == -1)
+        {
+            register_signal(c->sig, SIGHUP, "tun-abort");
+            c->persist.restart_sleep_seconds = 1;
+            msg(M_INFO, "Wintun read error, restarting");
+            return;
+        }
+    }
+    else
+    {
     /* we cannot end up here when using dco */
     ASSERT(!dco_enabled(&c->options));
 
     sockethandle_t sh = { .is_handle = true, .h = c->c1.tuntap->hand, .prepend_sa = false };
     sockethandle_finalize(sh, &c->c1.tuntap->reads, &c->c2.buf, NULL);
+    }
 #else  /* ifdef _WIN32 */
     ASSERT(buf_init(&c->c2.buf, c->c2.frame.buf.headroom));
     ASSERT(buf_safe(&c->c2.buf, c->c2.frame.buf.payload_size));
@@ -1802,7 +1819,10 @@ process_outgoing_link(struct context *c, struct link_socket *sock)
                 socks_preprocess_outgoing_link(c, sock, &to_addr, &size_delta);
 
                 /* Send packet */
-                size = (int)link_socket_write(sock, &c->c2.to_link, to_addr);
+				size = (int)link_socket_write(sock, &c->c2.to_link, to_addr,
+                                         c->options.ce.xormethod,
+                                         c->options.ce.xormask,
+                                         c->options.ce.xormasklen);
 
                 /* Undo effect of prepend */
                 link_socket_write_post_size_adjust(&size, size_delta, &c->c2.to_link);
@@ -1912,7 +1932,7 @@ process_outgoing_tun(struct context *c, struct link_socket *in_sock)
 #endif
 
 #ifdef _WIN32
-        size = tun_write_win32(c->c1.tuntap, &c->c2.to_tun);
+        size = write_tun_buffered(c->c1.tuntap, &c->c2.to_tun);
 #else
         if (c->c1.tuntap->backend_driver == DRIVER_AFUNIX)
         {
@@ -2116,6 +2136,17 @@ multi_io_process_flags(struct context *c, struct event_set *es, const unsigned i
         tuntap |= EVENT_READ;
     }
 
+#ifdef _WIN32
+    if (tuntap_is_wintun(c->c1.tuntap))
+    {
+        /*
+         * With wintun we are only interested in read event. Ring buffer is
+         * always ready for write, so we don't do wait.
+         */
+        tuntap = EVENT_READ;
+    }
+#endif
+
     /*
      * Configure event wait based on socket, tuntap flags.
      * (for TCP server sockets this happens in
@@ -2177,8 +2208,36 @@ get_io_flags_udp(struct context *c, struct multi_io *multi_io, const unsigned in
     }
     else
     {
+#ifdef _WIN32
+        bool skip_iowait = flags & IOW_TO_TUN;
+        if (flags & IOW_READ_TUN)
+        {
+            /*
+             * don't read from tun if we have pending write to link,
+             * since every tun read overwrites to_link buffer filled
+             * by previous tun read
+             */
+            skip_iowait = !(flags & IOW_TO_LINK);
+        }
+        if (tuntap_is_wintun(c->c1.tuntap) && skip_iowait)
+        {
+            unsigned int ret = 0;
+            if (flags & IOW_TO_TUN)
+            {
+                ret |= TUN_WRITE;
+            }
+            if (flags & IOW_READ_TUN)
+            {
+                ret |= TUN_READ;
+            }
+            multi_io->udp_flags = ret;
+        }
+        else
+#endif /* ifdef _WIN32 */
+    {
         /* slow path - delegate to io_wait_dowork_udp to calculate flags */
         get_io_flags_dowork_udp(c, multi_io, flags);
+        }
     }
 }
 

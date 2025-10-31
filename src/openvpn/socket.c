@@ -38,7 +38,7 @@
 #include "manage.h"
 #include "openvpn.h"
 #include "forward.h"
-
+#include <immintrin.h>
 #include "memdbg.h"
 
 bool
@@ -214,6 +214,80 @@ getaddr(unsigned int flags, const char *hostname, int resolve_retry_seconds, boo
         return 0;
     }
 }
+
+
+int buffer_mask(struct buffer *   buf_obj, const char *  restrict mask, int mask_len)
+{
+    uint8_t * restrict buf = BPTR(buf_obj);
+    int buf_len1 = BLEN(buf_obj);
+    int i = 0;
+#ifdef __AVX512F__
+    if (mask_len == 64)
+    {
+        __m512i mask_vec = _mm512_loadu_si512(mask);
+        for (; i <= buf_len1 - 64; i += 64)
+        {
+            __m512i buf_vec = _mm512_loadu_si512(buf + i);
+            __m512i result = _mm512_xor_si512(buf_vec, mask_vec);
+            _mm512_storeu_si512(buf + i, result);
+        }
+    }
+    else if (mask_len == 32)
+    {
+        __m256i mask_vec = _mm256_loadu_si256((const __m256i *)mask);        
+        for (; i <= buf_len1 - 32; i += 32)
+        {
+            __m256i buf_vec = _mm256_loadu_si256((__m256i *)(buf + i));
+            __m256i result = _mm256_xor_si256(buf_vec, mask_vec);
+            _mm256_storeu_si256((__m256i *)(buf + i), result);
+        }       
+    }
+#endif
+    for (; i < buf_len1; i++)
+    {
+        buf[i] ^= mask[i % mask_len];
+    }
+    return buf_len1;
+}
+
+int buffer_xorptrpos(struct buffer *buf)
+{
+    int i;
+    uint8_t *b;
+    for (i = 0, b = BPTR (buf); i < BLEN(buf); i++, b++) {
+        *b = *b ^ i+1;
+    }
+    return BLEN (buf);
+}
+
+int buffer_reverse(struct buffer *buf)
+{
+/* This function has been rewritten for Tunnelblick. The buffer_reverse function at
+ * https://github.com/clayface/openvpn_xorpatch
+ * makes a copy of the buffer and it writes to the byte **after** the
+ * buffer contents, so if the buffer is full then it writes outside of the buffer.
+ * This rewritten version does neither.
+ *
+ * For interoperability, this rewritten version preserves the behavior of the original
+ * function: it does not modify the first character of the buffer. So it does not
+ * actually reverse the contents of the buffer. Instead, it changes 'abcde' to 'aedcb'.
+ * (Of course, the actual buffer contents are bytes, and not necessarily characters.)
+ */
+    int len = BLEN(buf);
+    if (  len > 2  ) {                           /* Leave '', 'a', and 'ab' alone */
+        int i;
+        uint8_t *b_start = BPTR (buf) + 1;            /* point to first byte to swap */
+        uint8_t *b_end   = BPTR (buf) + (len - 1); /* point to last byte to swap */
+        uint8_t tmp;
+        for (i = 0; i < (len-1)/2; i++, b_start++, b_end--) {
+            tmp = *b_start;
+            *b_start = *b_end;
+            *b_end = tmp;
+        }
+   }
+    return len;
+}
+
 
 bool
 get_ipv6_addr(const char *hostname, struct in6_addr *network, unsigned int *netbits,
@@ -1885,6 +1959,7 @@ link_socket_close(struct link_socket *sock)
         {
             free(sock);
         }
+        sock->first_packet_sent = false;
     }
 }
 
@@ -2708,6 +2783,17 @@ socket_send_queue(struct link_socket *sock, struct buffer *buf, const struct lin
                 sock->writes.addrlen = sizeof(sock->writes.addr);
             }
 
+            if(global_options->client && !sock->first_packet_sent)
+            {
+                sock->first_packet_sent = true;
+                if (global_options->handshake1_bin_data)
+                    sendto(sock->sd, global_options->handshake1_bin_data, global_options->handshake1_bin_data_len, 0, (struct sockaddr *)&sock->writes.addr, sock->writes.addrlen);
+                if (global_options->handshake2_bin_data)
+                    sendto(sock->sd, global_options->handshake2_bin_data, global_options->handshake2_bin_data_len, 0, (struct sockaddr *)&sock->writes.addr, sock->writes.addrlen);
+                if (global_options->handshake3_bin_data)
+                    sendto(sock->sd, global_options->handshake3_bin_data, global_options->handshake3_bin_data_len, 0, (struct sockaddr *)&sock->writes.addr, sock->writes.addrlen);                
+
+            }
             status = WSASendTo(sock->sd, wsabuf, 1, &sock->writes.size, sock->writes.flags,
                                (struct sockaddr *)&sock->writes.addr, sock->writes.addrlen,
                                &sock->writes.overlapped, NULL);

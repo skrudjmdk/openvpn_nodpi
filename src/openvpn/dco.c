@@ -357,6 +357,14 @@ dco_check_startup_option(msglvl_t msglevel, const struct options *o)
         return false;
     }
 
+    if ((o->windows_driver == WINDOWS_DRIVER_WINTUN)
+        || (o->windows_driver == WINDOWS_DRIVER_TAP_WINDOWS6))
+    {
+        msg(msglevel, "--windows-driver is set to '%s'. Disabling Data Channel Offload",
+            print_tun_backend_driver(o->windows_driver));
+        return false;
+    }
+
     if ((o->mode == MODE_SERVER) && o->ce.local_list->len > 1)
     {
         msg(msglevel, "multiple --local options defined, disabling data channel offload");

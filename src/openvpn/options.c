@@ -68,6 +68,422 @@
 #include "memdbg.h"
 #include "options_util.h"
 
+static unsigned char hex_char_to_nibble(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+}
+
+static unsigned char * hex_string_to_binary(const char * hex_str, size_t * out_len)
+{
+    if (!hex_str || !out_len)
+    {
+        if (out_len) *out_len = 0;
+        return NULL;
+    }
+
+    size_t len = strlen(hex_str);
+    size_t hex_count = 0;
+
+    for (size_t i = 0; i < len; ++i)
+    {
+        unsigned char c = (unsigned char)hex_str[i];
+        if (isxdigit(c))
+        {
+            hex_count++;
+        }
+        else if (!isspace(c))
+        {
+            *out_len = 0;
+            return NULL;
+        }
+    }
+
+    if (hex_count % 2 != 0)
+    {
+        *out_len = 0;
+        return NULL;
+    }
+
+    size_t bin_len = hex_count / 2;
+    unsigned char * binary = (unsigned char *)malloc(bin_len);
+    if (!binary)
+    {
+        *out_len = 0;
+        return NULL;
+    }
+
+    size_t hex_index = 0;
+    for (size_t i = 0; i < len; ++i)
+    {
+        unsigned char c = (unsigned char)hex_str[i];
+        if (isxdigit(c))
+        {
+            if (hex_index % 2 == 0)
+            {
+                binary[hex_index / 2] = (hex_char_to_nibble(c) << 4);
+            }
+            else
+            {
+                binary[hex_index / 2] |= hex_char_to_nibble(c);
+            }
+            hex_index++;
+        }
+    }
+
+    *out_len = bin_len;
+    return binary;
+}
+
+
+#define RDPUDP_FLAG_SYN                0x0001
+#define RDPUDP_FLAG_CORRELATION_ID     0x0800
+#define RDPUDP_FLAG_SYNEX              0x1000
+#define RDPUDP_PROTOCOL_VERSION_3      0x0101
+#define RDPUDP_VERSION_INFO_VALID      0x0001
+
+#pragma pack(push, 1)
+typedef struct
+{
+    int32_t  snSourceAck;
+    uint16_t uReceiveWindowSize;
+    uint16_t uFlags;
+} RDPUDP_FEC_HEADER;
+
+typedef struct
+{
+    uint32_t snInitialSequenceNumber;
+    uint16_t uUpStreamMtu;
+    uint16_t uDownStreamMtu;
+} RDPUDP_SYNDATA_PAYLOAD;
+
+typedef struct
+{
+    uint8_t  uCorrelationId[16];
+    uint8_t  uReserved[16];
+} RDPUDP_CORRELATION_ID_PAYLOAD;
+
+typedef struct
+{
+    uint16_t uSynExFlags;
+    uint16_t uUdpVer;
+    uint8_t  cookieHash[32];
+} RDPUDP_SYNDATAEX_PAYLOAD;
+
+#pragma pack(pop)
+#include <openssl/sha.h>
+#include <openssl/rand.h>
+
+static int generate_valid_correlation_id(uint8_t id[16])
+{
+    if (!RAND_bytes(id, 16))
+    {
+        return -1;
+    }
+    if (id[0] == 0x00 || id[0] == 0xF4)
+    {
+        id[0] = (id[0] == 0x00)?0x01:0xF3;
+    }
+    for (int i = 0; i < 16; ++i)
+    {
+        while (id[i] == 0x0D)
+        {
+            if (!RAND_bytes(&id[i], 1)) return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int generate_cookie_hash(uint8_t cookie_hash[32])
+{
+    uint8_t securityCookie[32];
+    if (!RAND_bytes(securityCookie, sizeof(securityCookie)))
+    {
+        return -1;
+    }
+
+    if (!SHA256(securityCookie, sizeof(securityCookie), cookie_hash))
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int generate_rdpudp_syn_datagram(uint8_t * buffer, size_t buffer_size)
+{
+    const uint16_t RECV_WINDOW = 64;
+    const uint16_t MTU = 1232;
+    if (!buffer || buffer_size < MTU)
+    {
+        return -1;
+    }
+    uint8_t corr_id[16] = {};
+    if (generate_valid_correlation_id(corr_id) != 0)
+    {
+        return -1;
+    }
+    uint8_t cookie_hash[32] = {};
+    if (generate_cookie_hash(cookie_hash) != 0)
+    {
+        return -1;
+    }
+    uint32_t seq_num = {};
+    if (!RAND_bytes((uint8_t *)&seq_num, sizeof(seq_num)))
+    {
+        return -1;
+    }
+    uint16_t flags = RDPUDP_FLAG_SYN | RDPUDP_FLAG_CORRELATION_ID | RDPUDP_FLAG_SYNEX;
+    RDPUDP_FEC_HEADER fec;
+    fec.snSourceAck = htonl(-1);
+    fec.uReceiveWindowSize = htons(RECV_WINDOW);
+    fec.uFlags = htons(flags);
+    RDPUDP_SYNDATA_PAYLOAD syn;
+    syn.snInitialSequenceNumber = htonl(seq_num);
+    syn.uUpStreamMtu = htons(MTU);
+    syn.uDownStreamMtu = htons(MTU);
+    size_t offset = 0;
+    memcpy(buffer + offset, &fec, sizeof(fec)); offset += sizeof(fec);
+    memcpy(buffer + offset, &syn, sizeof(syn)); offset += sizeof(syn);
+    RDPUDP_CORRELATION_ID_PAYLOAD corr;
+    memcpy(corr.uCorrelationId, corr_id, 16);
+    memset(corr.uReserved, 0, 16);
+    memcpy(buffer + offset, &corr, sizeof(corr)); offset += sizeof(corr);
+    RDPUDP_SYNDATAEX_PAYLOAD synex;
+    synex.uSynExFlags = htons(RDPUDP_VERSION_INFO_VALID);
+    synex.uUdpVer = htons(RDPUDP_PROTOCOL_VERSION_3);
+    memcpy(synex.cookieHash, cookie_hash, 32);
+    memcpy(buffer + offset, &synex, sizeof(synex)); offset += sizeof(synex);
+    if (offset > MTU)
+    {
+        return -1;
+    }
+    memset(buffer + offset, 0, MTU - offset);
+
+    return (int)MTU;
+}
+
+static uint8_t * gen_fakerdp(size_t* out_len)
+{
+    uint8_t* syn_packet = (uint8_t *) malloc(1232);
+    int len = generate_rdpudp_syn_datagram(syn_packet, 1232);
+    if (len != 1232)
+    {
+        free(syn_packet);
+        return NULL;
+    }
+    *out_len = len;
+    return syn_packet;
+}
+
+static int dns_make_a_query(uint8_t * buffer, size_t buf_size, const char * domain, uint16_t query_id)
+{
+    if (!buffer || !domain || buf_size < 32)
+    {
+        return -1;
+    }
+    size_t offset = 0;
+    uint8_t header[12] = {
+        (query_id >> 8) & 0xFF,
+        query_id & 0xFF,
+        0x01, 0x00,
+        0x00, 0x01,
+        0x00, 0x00,
+        0x00, 0x00,
+        0x00, 0x00
+    };
+    memcpy(buffer + offset, header, 12);
+    offset += 12;
+    const char * p = domain;
+    while (*p)
+    {
+        const char * dot = strchr(p, '.');
+        size_t len = dot?(size_t)(dot - p):strlen(p);
+        if (len == 0 || len > 63)
+            return -1;
+        if (offset + 1 + len >= buf_size)
+            return -1;
+        buffer[offset++] = (uint8_t)len;
+        memcpy(buffer + offset, p, len);
+        offset += len;
+
+        p += len + (dot?1:0);
+    }
+    if (offset >= buf_size) return -1;
+    buffer[offset++] = 0;
+    if (offset + 4 > buf_size) return -1;
+    buffer[offset++] = 0x00;
+    buffer[offset++] = 0x01;
+    buffer[offset++] = 0x00;
+    buffer[offset++] = 0x01;
+    return (int)offset;
+}
+
+static unsigned char * gen_dnsq(const char * domain, size_t * packet_len)
+{
+    uint8_t * dns_buf = (uint8_t *)malloc(256);
+    uint16_t id = (uint16_t)time(NULL);
+    int len = dns_make_a_query(dns_buf, 256, domain, id);
+    if (len < 0)
+    {
+        free(dns_buf);
+        return NULL;
+    }
+    *packet_len = len;
+    return dns_buf;
+}
+
+static int rand_alnum_string(char * out, size_t len)
+{
+    if (!RAND_bytes((unsigned char *)out, len)) return -1;
+    static const char alnum[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    for (size_t i = 0; i < len; ++i)
+    {
+        out[i] = alnum[((unsigned char)out[i]) % (sizeof(alnum) - 1)];
+    }
+    out[len] = '\0';
+    return 0;
+}
+
+static void rand_private_ip(char * ip_str, size_t len)
+{
+    uint8_t a, b, c, d;
+    int type = RAND_bytes((unsigned char *)&type, sizeof(type))?(type % 3):0;
+
+    switch (type)
+    {
+        case 0:
+            a = 10;
+            RAND_bytes(&b, 1);
+            RAND_bytes(&c, 1);
+            RAND_bytes(&d, 1);
+            break;
+        case 1:
+            a = 172;
+            do
+            {
+                RAND_bytes(&b, 1);
+            }
+            while (b < 16 || b > 31);
+            RAND_bytes(&c, 1);
+            RAND_bytes(&d, 1);
+            break;
+        default:
+            a = 192;
+            b = 168;
+            RAND_bytes(&c, 1);
+            RAND_bytes(&d, 1);
+            break;
+    }
+    snprintf(ip_str, len, "%d.%d.%d.%d", a, b, c, d);
+}
+
+static int sip_generate_random_register(uint8_t * buffer, size_t buf_size)
+{
+    if (!buffer || buf_size < 1024) return -1;
+    char sip_domain[64];
+    char username[32];
+    char client_ip[16];
+    char call_id[64];
+    char branch[64];
+    char tag[32];
+    char client_name[32];
+    if (rand_alnum_string(sip_domain + 4, 12) != 0) return -1;
+    memcpy(sip_domain, "sip.", 4);
+    strcat(sip_domain, ".com");
+    if (rand_alnum_string(username, 10) != 0) return -1;
+    rand_private_ip(client_ip, sizeof(client_ip));
+    if (rand_alnum_string(call_id, 32) != 0) return -1;
+    if (rand_alnum_string(branch, 32) != 0) return -1;
+    if (rand_alnum_string(tag, 16) != 0) return -1;
+    if (rand_alnum_string(client_name, 16) != 0) return -1;
+    uint16_t port = 1024 + (rand() % 64511);
+    int len = snprintf(
+        (char *)buffer, buf_size,
+        "REGISTER sip:%s SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP %s:%u;branch=z9hG4bK%s;rport\r\n"
+        "From: <sip:%s@%s>;tag=%s\r\n"
+        "To: <sip:%s@%s>\r\n"
+        "Call-ID: %s@%s\r\n"
+        "Contact: <sip:%s@%s:%u>;expires=1200;q=0.500\r\n"
+        "Expires: 1200\r\n"
+        "CSeq: 1 REGISTER\r\n"
+        "Content-Length: 0\r\n"
+        "Max-Forwards: 70\r\n"
+        "User-Agent: %s/1.0\r\n"
+        "\r\n",
+        sip_domain,
+        client_ip, port, branch,
+        username, sip_domain, tag,
+        username, sip_domain,
+        call_id, client_ip,
+        username, client_ip, port, client_name
+    );
+    if (len < 0 || (size_t)len >= buf_size)
+    {
+        return -1;
+    }
+    return len;
+}
+
+static uint8_t * gen_sip(size_t * out_len)
+{
+    uint8_t * sip_buf = (uint8_t *)malloc(1500);
+    int len = sip_generate_random_register(sip_buf, 1500);
+    if (len < 0)
+    {
+        free(sip_buf);
+        return 0;
+    }
+    *out_len = len;
+    return sip_buf;
+}
+
+static int stun_bind_req(uint8_t * buffer, size_t buf_size)
+{
+    if (!buffer || buf_size < 28)
+    {
+        return -1;
+    }
+    buffer[0] = 0x00;
+    buffer[1] = 0x01;
+    buffer[2] = 0x00;
+    buffer[3] = 0x08;
+    buffer[4] = 0x21;
+    buffer[5] = 0x12;
+    buffer[6] = 0xA4;
+    buffer[7] = 0x42;
+    if (!RAND_bytes(buffer + 8, 12))
+    {
+        return -1;
+    }
+    buffer[20] = 0x00;
+    buffer[21] = 0x24;
+    buffer[22] = 0x00;
+    buffer[23] = 0x04;
+    buffer[24] = 0x7e;
+    buffer[25] = 0xff;
+    buffer[26] = 0xff;
+    buffer[27] = 0xff;
+    return 28;
+}
+
+static uint8_t * gen_stun(size_t * out_len)
+{
+    uint8_t * stun_buf = (uint8_t *)malloc(64);
+    int len = stun_bind_req(stun_buf, 64);
+    if (len < 0)
+    {
+        free(stun_buf);
+        return NULL;
+    }
+    *out_len = len;
+    return stun_buf;
+}
+
 const char title_string[] = PACKAGE_STRING
 #ifdef CONFIGURE_GIT_REVISION
     " [git:" CONFIGURE_GIT_REVISION CONFIGURE_GIT_FLAGS "]"
@@ -511,6 +927,9 @@ static const char usage_message[] =
     "\n"
     "Client options (when connecting to a multi-client server):\n"
     "--client         : Helper option to easily configure client mode.\n"
+    "--I1 rdp|sip|stun|dns|HEXSTRING : First fake udp client packet\n"
+    "--I2 HEXSTRING   : Second fake udp client packet\n"
+    "--I3 HEXSTRING   : Third fake udp client packet\n"
     "--auth-user-pass [up] : Authenticate with server using username/password.\n"
     "                  up is a file containing the username on the first line,\n"
     "                  and a password on the second. If either the password or both\n"
@@ -753,6 +1172,10 @@ static const char usage_message[] =
     "                       optional parameter controls the initial state of ex.\n"
     "--show-net-up   : Show " PACKAGE_NAME "'s view of routing table and net adapter list\n"
     "                  after TAP adapter is up and routes have been added.\n"
+    "--windows-driver   : Which tun driver to use?\n"
+    "                     ovpn-dco (default)\n"
+    "                     tap-windows6\n"
+    "                     wintun\n"
     "--block-outside-dns   : Block DNS on other network adapters to prevent DNS leaks\n"
     "Windows Standalone Options:\n"
     "\n"
@@ -837,6 +1260,9 @@ init_options(struct options *o, const bool init_gc)
     o->resolve_retry_seconds = RESOLV_RETRY_INFINITE;
     o->resolve_in_advance = false;
     o->proto_force = -1;
+	o->ce.xormethod = 0;
+    o->ce.xormask = "\0";
+    o->ce.xormasklen = 0;
     o->occ = true;
 #ifdef ENABLE_MANAGEMENT
     o->management_log_history_cache = 250;
@@ -1619,6 +2045,9 @@ show_connection_entry(const struct connection_entry *o)
     SHOW_BOOL(bind_ipv6_only);
     SHOW_INT(connect_retry_seconds);
     SHOW_INT(connect_timeout);
+	SHOW_INT (xormethod);
+    SHOW_STR (xormask);
+    SHOW_INT (xormasklen);
 
     if (o->http_proxy_options)
     {
@@ -2458,6 +2887,10 @@ options_postprocess_verify_ce(const struct options *options, const struct connec
             msg(M_USAGE, "%s, which requires --ip-win32 dynamic or adaptive", prefix);
         }
     }
+    if (options->windows_driver == WINDOWS_DRIVER_WINTUN && dev != DEV_TYPE_TUN)
+    {
+        msg(M_USAGE, "--windows-driver wintun requires --dev tun");
+    }
 #endif /* ifdef _WIN32 */
 
     /*
@@ -3246,8 +3679,9 @@ options_postprocess_mutate_invariant(struct options *options)
 #ifdef _WIN32
     const int dev = dev_type_enum(options->dev, options->dev_type);
 
-    /* when using ovpn-dco, kernel doesn't send DHCP requests, so don't use it */
-    if ((options->windows_driver == DRIVER_DCO)
+    /* when using wintun/ovpn-dco, kernel doesn't send DHCP requests, so don't use it */
+    if ((options->windows_driver == WINDOWS_DRIVER_WINTUN
+         || options->windows_driver == DRIVER_DCO)
         && (options->tuntap_options.ip_win32_type == IPW32_SET_DHCP_MASQ
             || options->tuntap_options.ip_win32_type == IPW32_SET_ADAPTIVE))
     {
@@ -4754,6 +5188,39 @@ options_string_extract_option(const char *options_string, const char *opt_name, 
     return ret;
 }
 
+#ifdef _WIN32
+/**
+ * Parses --windows-driver config option
+ *
+ * @param str       value of --windows-driver option
+ * @param msglevel  msglevel to report parsing error
+ * @return enum tun_driver_type  driver type, WINDOWS_DRIVER_UNSPECIFIED on unknown --windows-driver value
+ */
+static enum tun_driver_type
+parse_windows_driver(const char *str, const int msglevel)
+{
+    if (streq(str, "tap-windows6"))
+    {
+        return WINDOWS_DRIVER_TAP_WINDOWS6;
+    }
+    else if (streq(str, "wintun"))
+    {
+        return WINDOWS_DRIVER_WINTUN;
+    }
+
+    else if (streq(str, "ovpn-dco"))
+    {
+        return DRIVER_DCO;
+    }
+    else
+    {
+        msg(msglevel, "--windows-driver must be tap-windows6, wintun "
+            "or ovpn-dco");
+        return WINDOWS_DRIVER_UNSPECIFIED;
+    }
+}
+#endif /* ifdef _WIN32 */
+
 /*
  * parse/print topology coding
  */
@@ -5890,9 +6357,7 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
     else if (streq(p[0], "windows-driver") && p[1] && !p[2])
     {
         VERIFY_PERMISSION(OPT_P_GENERAL);
-        msg(M_WARN,
-            "DEPRECATED OPTION: windows-driver: In OpenVPN 2.7, the default Windows driver is ovpn-dco. "
-            "If incompatible options are used, OpenVPN will fall back to tap-windows6. Wintun support has been removed.");
+        options->windows_driver = parse_windows_driver(p[1], M_FATAL);
     }
 #endif
     else if (streq(p[0], "disable-dco"))
@@ -6647,6 +7112,92 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
             goto err;
         }
         options->proto_force = proto_force;
+    }
+	else if (streq(p[0], "I1") && p[1])
+    {
+        if(strlen(p[1]) == 3 && p[1][0] == 'r' && p[1][1] == 'd' && p[1][2] == 'p')
+        {
+            options->handshake1_bin_data = gen_fakerdp(&options->handshake1_bin_data_len);
+        }
+        else if (strlen(p[1]) == 3 && p[1][0] == 's' && p[1][1] == 'i' && p[1][2] == 'p')
+        {
+            options->handshake1_bin_data = gen_sip(&options->handshake1_bin_data_len);
+        }
+        else if (strlen(p[1]) == 4 && p[1][0] == 's' && p[1][1] == 't' && p[1][2] == 'u' && p[1][3] == 'n')
+        {
+            options->handshake1_bin_data = gen_stun(&options->handshake1_bin_data_len);
+        }
+        else if (p[2] && strlen(p[1]) == 3 && p[1][0] == 'd' && p[1][1] == 'n' && p[1][2] == 's')
+        {
+            options->handshake1_bin_data = gen_dnsq(p[2], &options->handshake1_bin_data_len);
+        }
+        else
+        {
+            options->handshake1_bin_data = hex_string_to_binary(p[1], &options->handshake1_bin_data_len);
+        }
+        if(!options->handshake1_bin_data)
+        {
+            msg(msglevel, "Bad I1");
+            goto err;
+        }
+    }
+    else if (streq(p[0], "I2") && p[1])
+    {
+        options->handshake2_bin_data = hex_string_to_binary(p[1], &options->handshake2_bin_data_len);
+        if (!options->handshake2_bin_data)
+        {
+            msg(msglevel, "Bad I1");
+            goto err;
+        }
+        }
+    else if (streq(p[0], "I3") && p[1])
+    {
+        options->handshake3_bin_data = hex_string_to_binary(p[1], &options->handshake3_bin_data_len);
+        if (!options->handshake3_bin_data)
+        {
+            msg(msglevel, "Bad I1");
+            goto err;
+        }
+    }
+	else if (streq (p[0], "scramble") && p[1])
+    {
+        VERIFY_PERMISSION (OPT_P_GENERAL|OPT_P_CONNECTION);
+        if (streq (p[1], "xormask") && p[2] && (!p[3]))
+        {
+            options->ce.xormethod = 1;
+            options->ce.xormask = p[2];
+            options->ce.xormasklen = strlen(options->ce.xormask);
+        }
+        else if (streq (p[1], "xorptrpos") && (!p[2]))
+        {
+            options->ce.xormethod = 2;
+            options->ce.xormask = NULL;
+            options->ce.xormasklen = 0;
+        }
+        else if (streq (p[1], "reverse") && (!p[2]))
+        {
+            options->ce.xormethod = 3;
+            options->ce.xormask = NULL;
+            options->ce.xormasklen = 0;
+        }
+        else if (streq (p[1], "obfuscate") && p[2] && (!p[3]))
+        {
+            options->ce.xormethod = 4;
+            options->ce.xormask = p[2];
+            options->ce.xormasklen = strlen(options->ce.xormask);
+        }
+        else if (!p[2])
+        {
+            msg (M_WARN, "WARNING: No recognized 'scramble' method specified; using 'scramble xormask \"%s\"'", p[1]);
+            options->ce.xormethod = 1;
+            options->ce.xormask = p[1];
+            options->ce.xormasklen = strlen(options->ce.xormask);
+        }
+        else
+        {
+            msg (msglevel, "No recognized 'scramble' method specified or extra parameters for 'scramble'");
+            goto err;
+        }
     }
     else if (streq(p[0], "http-proxy") && p[1] && !p[5])
     {

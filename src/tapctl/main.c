@@ -17,7 +17,7 @@
  *  You should have received a copy of the GNU General Public License along
  *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
-
+#define UNICODE
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -75,8 +75,8 @@ static const WCHAR usage_message_create[] =
     L"               Note: This name can also be specified as OpenVPN's --dev-node   \n"
     L"               option.                                                         \n"
     L"--hwid <hwid>  Adapter hardware ID. Default value is root\\tap0901, which      \n"
-    L"               describes tap-windows6 driver. To work with ovpn-dco driver,    \n"
-    L"               driver, specify 'ovpn-dco'.                                     \n"
+    L"               describes tap-windows6 driver. To work with wintun or ovpn-dco  \n"
+    L"               driver, specify 'wintun' or 'ovpn-dco'.                         \n"
     L"\n"
     L"Output:\n"
     L"\n"
@@ -94,7 +94,7 @@ static const WCHAR usage_message_list[] =
     L"\n"
     L"Options:\n"
     L"\n"
-    L"--hwid <hwid>  Adapter hardware ID. By default, root\\tap0901, tap0901 and \n"
+    L"--hwid <hwid>  Adapter hardware ID. By default, root\\tap0901, tap0901, wintun and \n"
     L"               ovpn-dco adapters are listed. Use this switch to limit the list.\n"
     L"\n"
     L"Output:\n"
@@ -167,6 +167,10 @@ get_unique_adapter_name(LPCWSTR hwid, struct tap_adapter_node *adapter_list)
     if (wcsicmp(hwid, L"ovpn-dco") == 0)
     {
         base_name = L"OpenVPN Data Channel Offload";
+    }
+    else if (wcsicmp(hwid, L"wintun") == 0)
+    {
+        base_name = L"OpenVPN Wintun";
     }
     else if (wcsicmp(hwid, L"root\\" _L(TAP_WIN_COMPONENT_ID)) == 0)
     {
@@ -349,6 +353,7 @@ create_delete_adapter:
     {
         WCHAR szzHwId[0x100] =
             L"root\\" _L(TAP_WIN_COMPONENT_ID) L"\0" _L(TAP_WIN_COMPONENT_ID) L"\0"
+																			  L"Wintun\0"
                                                                               L"ovpn-dco\0";
 
         /* Parse options. */
