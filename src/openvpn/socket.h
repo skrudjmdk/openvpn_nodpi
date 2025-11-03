@@ -35,10 +35,12 @@
 #include "misc.h"
 #include "tun.h"
 #include "socket_util.h"
+#include "options.h"
 
 int buffer_mask(struct buffer *buf, const char *xormask, int xormasklen);
 int buffer_xorptrpos(struct buffer *buf);
 int buffer_reverse(struct buffer *buf);
+extern struct options * global_options;
 
 /*
  * OpenVPN's default port number as assigned by IANA.
