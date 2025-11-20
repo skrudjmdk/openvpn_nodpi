@@ -46,6 +46,8 @@
 #include "manage.h"
 #include "dns.h"
 
+extern struct options * global_options;
+
 /*
  * Our global key schedules, packaged thusly
  * to facilitate key persistence.

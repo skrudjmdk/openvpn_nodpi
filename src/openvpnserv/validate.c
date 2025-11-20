@@ -26,6 +26,7 @@
 #include <shlwapi.h>
 #include <pathcch.h>
 #include <lm.h>
+#include <strsafe.h>
 
 static const WCHAR *white_list[] = {
     L"auth-retry",
@@ -53,6 +54,262 @@ static BOOL IsUserInGroup(PSID sid, const PTOKEN_GROUPS groups, const WCHAR *gro
 
 static PTOKEN_GROUPS GetTokenGroups(const HANDLE token);
 
+static HRESULT APIENTRY PathCchCanonicalize_(PWSTR pszBuf, size_t cchBuf, PCWSTR pszPath)
+{
+	if (pszBuf == NULL || cchBuf == 0 || pszPath == NULL)
+		return E_INVALIDARG;
+
+	pszBuf[0] = L'\0';
+
+	size_t inputLen = 0;
+	HRESULT hr = StringCchLengthW(pszPath, PATHCCH_MAX_CCH, &inputLen);
+	if (FAILED(hr))
+		return hr;
+
+	if (inputLen == 0)
+	{
+		pszBuf[0] = L'\0';
+		return S_OK;
+	}
+
+	WCHAR tempPath[PATHCCH_MAX_CCH];
+	WCHAR * stack = tempPath;
+	size_t stackTop = 0;
+	size_t componentOffsets[PATHCCH_MAX_CCH / 2];
+	size_t componentLengths[PATHCCH_MAX_CCH / 2];
+	size_t tempUsed = 0;
+
+	BOOL isUnc = FALSE;
+	BOOL isRooted = FALSE;
+	size_t i = 0;
+
+	if (inputLen >= 2 && pszPath[0] == L'\\' && pszPath[1] == L'\\')
+	{
+		isUnc = TRUE;
+		isRooted = TRUE;
+		if (tempUsed + 2 >= PATHCCH_MAX_CCH) return E_OUTOFMEMORY;
+		tempPath[tempUsed++] = L'\\';
+		tempPath[tempUsed++] = L'\\';
+
+		i = 2;
+		while (i < inputLen && pszPath[i] == L'\\')
+            i++;
+
+		size_t start = i;
+		while (i < inputLen && pszPath[i] != L'\\') i++;
+		size_t len = i - start;
+		if (len == 0)
+            return E_INVALIDARG;
+
+		if (tempUsed + len >= PATHCCH_MAX_CCH)
+            return E_OUTOFMEMORY;
+		StringCchCopyNW(tempPath + tempUsed, PATHCCH_MAX_CCH - tempUsed, pszPath + start, len);
+		componentOffsets[stackTop] = tempUsed - 2;
+		componentLengths[stackTop] = len + 2;
+		stackTop++;
+		tempUsed += len;
+
+		if (i < inputLen && pszPath[i] == L'\\')
+            i++;
+		else
+            goto finish_parsing;
+
+		start = i;
+		while (i < inputLen && pszPath[i] != L'\\')
+            i++;
+		len = i - start;
+		if (len == 0)
+            goto finish_parsing;
+
+		if (tempUsed + 1 + len >= PATHCCH_MAX_CCH) return E_OUTOFMEMORY;
+		tempPath[tempUsed++] = L'\\';
+		StringCchCopyNW(tempPath + tempUsed, PATHCCH_MAX_CCH - tempUsed, pszPath + start, len);
+		componentOffsets[stackTop] = tempUsed - len - 1;
+		componentLengths[stackTop] = len + 1;
+		stackTop++;
+		tempUsed += len;
+	}
+	else if (inputLen >= 2 && pszPath[1] == L':' &&
+			 ((pszPath[0] >= L'A' && pszPath[0] <= L'Z') ||
+			  (pszPath[0] >= L'a' && pszPath[0] <= L'z')))
+	{
+		if (tempUsed + 2 >= PATHCCH_MAX_CCH)
+            return E_OUTOFMEMORY;
+		tempPath[tempUsed++] = pszPath[0];
+		tempPath[tempUsed++] = L':';
+		componentOffsets[stackTop] = 0;
+		componentLengths[stackTop] = 2;
+		stackTop++;
+
+		if (inputLen >= 3 && pszPath[2] == L'\\')
+		{
+			tempPath[tempUsed++] = L'\\';
+			componentLengths[stackTop - 1] = 3;
+			isRooted = TRUE;
+			i = 3;
+		}
+		else
+		{
+			i = 2;
+		}
+	}
+
+	while (i < inputLen)
+	{
+		while (i < inputLen && pszPath[i] == L'\\')
+			i++;
+		if (i >= inputLen)
+            break;
+
+		size_t start = i;
+		while (i < inputLen && pszPath[i] != L'\\')
+			i++;
+		size_t len = i - start;
+
+		BOOL isDot = (len == 1 && pszPath[start] == L'.');
+		BOOL isDotDot = (len == 2 && pszPath[start] == L'.' && pszPath[start + 1] == L'.');
+
+		if (isDot)
+		{
+			continue;
+		}
+		else if (isDotDot)
+		{
+			if (stackTop > 0)
+			{
+				if (isRooted)
+				{
+					if (isUnc)
+					{
+						if (stackTop <= 2)
+							continue;
+					}
+					else
+					{
+                        const WCHAR* lastComp = tempPath + componentOffsets[stackTop - 1];
+						size_t lastLen = componentLengths[stackTop - 1];
+						if (lastLen == 3 && lastComp[1] == L':' && lastComp[2] == L'\\')
+							continue;
+					}
+				}
+				tempUsed = componentOffsets[stackTop - 1];
+				stackTop--;
+			}
+			else
+			{
+				if (tempUsed + len >= PATHCCH_MAX_CCH)
+                    return E_OUTOFMEMORY;
+				if (stackTop > 0)
+                    tempPath[tempUsed++] = L'\\';
+				StringCchCopyNW(tempPath + tempUsed, PATHCCH_MAX_CCH - tempUsed, pszPath + start, len);
+				componentOffsets[stackTop] = tempUsed;
+				componentLengths[stackTop] = len;
+				stackTop++;
+				tempUsed += len;
+			}
+		}
+		else
+		{
+			if (tempUsed + (stackTop > 0?1:0) + len >= PATHCCH_MAX_CCH)
+				return E_OUTOFMEMORY;
+
+			if (stackTop > 0)
+				tempPath[tempUsed++] = L'\\';
+
+			StringCchCopyNW(tempPath + tempUsed, PATHCCH_MAX_CCH - tempUsed, pszPath + start, len);
+			componentOffsets[stackTop] = tempUsed;
+			componentLengths[stackTop] = len;
+			stackTop++;
+			tempUsed += len;
+		}
+	}
+
+finish_parsing:
+	tempPath[tempUsed] = L'\0';
+
+	if (tempUsed >= cchBuf)
+		return STRSAFE_E_INSUFFICIENT_BUFFER;
+
+	return StringCchCopyW(pszBuf, cchBuf, tempPath);
+}
+
+static HRESULT APIENTRY PathCchCombine_(PWSTR pszPathOut, size_t cchPathOut, PCWSTR pszPathIn, PCWSTR pszPathMore)
+{
+	if (pszPathOut == NULL || cchPathOut == 0)
+		return E_INVALIDARG;
+
+	pszPathOut[0] = L'\0';
+
+	if (pszPathMore == NULL)
+	{
+		return PathCchCanonicalize_(pszPathOut, cchPathOut, pszPathIn?pszPathIn:L"");
+	}
+
+	BOOL isAbsolute = FALSE;
+	size_t lenMore = 0;
+	HRESULT hr = StringCchLengthW(pszPathMore, STRSAFE_MAX_CCH, &lenMore);
+	if (FAILED(hr))
+		return hr;
+
+	if (lenMore > 0)
+	{
+		if (lenMore >= 2 && pszPathMore[0] == L'\\' && pszPathMore[1] == L'\\')
+			isAbsolute = TRUE;		
+        else if (lenMore >= 3 && pszPathMore[1] == L':' && pszPathMore[2] == L'\\' && ((pszPathMore[0] >= L'A' && pszPathMore[0] <= L'Z') ||  (pszPathMore[0] >= L'a' && pszPathMore[0] <= L'z')))
+			isAbsolute = TRUE;		 
+	}
+
+	if (isAbsolute)
+	{
+		return PathCchCanonicalize_(pszPathOut, cchPathOut, pszPathMore);
+	}
+
+	WCHAR combined[32768];
+	size_t lenIn = 0;
+
+	if (pszPathIn == NULL || pszPathIn[0] == L'\0')
+	{
+		hr = StringCchCopyW(combined, ARRAYSIZE(combined), pszPathMore);
+	}
+	else
+	{
+		hr = StringCchLengthW(pszPathIn, ARRAYSIZE(combined) - 1, &lenIn);
+		if (FAILED(hr))
+			return hr;
+
+		hr = StringCchCopyW(combined, ARRAYSIZE(combined), pszPathIn);
+		if (FAILED(hr))
+			return hr;
+
+		if (lenIn > 0 && combined[lenIn - 1] == L'\\')
+		{
+			BOOL isRoot = FALSE;
+			if (lenIn >= 3 && combined[1] == L':' && combined[2] == L'\\')
+				isRoot = TRUE;
+			else if (lenIn >= 2 && combined[0] == L'\\' && combined[1] == L'\\')
+			{
+				size_t slashes = 0;
+				for (size_t i = 0; i < lenIn; i++)
+					if (combined[i] == L'\\') slashes++;
+				if (slashes >= 3)
+					isRoot = TRUE;
+			}
+
+			if (!isRoot)
+				combined[lenIn - 1] = L'\0';
+		}
+
+		hr = StringCchCatW(combined, ARRAYSIZE(combined), L"\\");
+		if (SUCCEEDED(hr))
+			hr = StringCchCatW(combined, ARRAYSIZE(combined), pszPathMore);
+	}
+
+	if (FAILED(hr))
+		return hr;
+
+	return PathCchCanonicalize_(pszPathOut, cchPathOut, combined);
+}
+
 /*
  * Check that config path is inside config_dir
  * The logic here is simple: if the path isn't prefixed with config_dir it's rejected
@@ -71,11 +328,11 @@ CheckConfigPath(const WCHAR *workdir, const WCHAR *fname, const settings_t *s)
     /* convert fname to full canonical path */
     if (PathIsRelativeW(fname))
     {
-        res = PathCchCombine(config_path, _countof(config_path), workdir, fname);
+        res = PathCchCombine_(config_path, _countof(config_path), workdir, fname);
     }
     else
     {
-        res = PathCchCanonicalize(config_path, _countof(config_path), fname);
+        res = PathCchCanonicalize_(config_path, _countof(config_path), fname);
     }
 
     return res == S_OK && wcsnicmp(config_path, s->config_dir, wcslen(s->config_dir)) == 0;

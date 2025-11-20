@@ -40,7 +40,8 @@ openvpnserv_SOURCES = \
 	service.c service.h \
 	validate.c validate.h \
 	$(top_srcdir)/src/openvpn/wfp_block.c $(top_srcdir)/src/openvpn/wfp_block.h \
-	openvpnserv_resources.rc
+	openvpnserv_resources.rc \
+	$(top_srcdir)/src/openvpn/ring_buffer.h
 
 openvpnservmsg.dll: eventmsg.o
 	$(CC) -shared -Wl,--entry=0 -nostdlib -nostartfiles -o $@ $<

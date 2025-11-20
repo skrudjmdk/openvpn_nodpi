@@ -19,11 +19,11 @@
  *  You should have received a copy of the GNU General Public License along
  *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
-
+#define UNICODE
 #include "service.h"
 #include "validate.h"
 #include "eventmsg.h"
-
+#include <strsafe.h>
 #include <pathcch.h>
 
 LPCWSTR service_instance = L"";
@@ -55,6 +55,27 @@ GetRegString(HKEY key, LPCWSTR value, LPWSTR data, DWORD size, LPCWSTR default_v
     return ERROR_SUCCESS;
 }
 
+static HRESULT APIENTRY PathCchAddBackslash_( PWSTR pszPath,	 size_t cchPath)
+{
+	if (pszPath == NULL || cchPath == 0)
+		return E_INVALIDARG;
+
+	size_t length = 0;
+	HRESULT hr = StringCchLengthW(pszPath, cchPath, &length);
+	if (FAILED(hr))
+		return hr;
+
+	if (length == 0 || pszPath[length - 1] == L'\\')
+		return S_OK;
+
+	if (length + 1 >= cchPath)
+		return STRSAFE_E_INSUFFICIENT_BUFFER;
+
+	pszPath[length] = L'\\';
+	pszPath[length + 1] = L'\0';
+
+	return S_OK;
+}
 
 /**
  * Make sure that a dir path ends with a backslash.
@@ -67,7 +88,7 @@ GetRegString(HKEY key, LPCWSTR value, LPWSTR data, DWORD size, LPCWSTR default_v
 static BOOL
 ensure_trailing_backslash(PWSTR dir, size_t size)
 {
-    HRESULT res = PathCchAddBackslash(dir, size);
+    HRESULT res = PathCchAddBackslash_(dir, size);
     return (res == S_OK || res == S_FALSE) ? TRUE : FALSE;
 }
 

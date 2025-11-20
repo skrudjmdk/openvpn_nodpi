@@ -7,7 +7,7 @@
  * Copyright (C) 1993 - 2000.  Microsoft Corporation.  All rights reserved.
  *                      2013 Heiko Hund <heiko.hund@sophos.com>
  */
-
+#define UNICODE
 #include "service.h"
 
 #include <windows.h>

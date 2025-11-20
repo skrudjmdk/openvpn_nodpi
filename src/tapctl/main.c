@@ -17,7 +17,7 @@
  *  You should have received a copy of the GNU General Public License along
  *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
-
+#define UNICODE
 #ifdef HAVE_CONFIG_H
 #include <config.h>
 #endif
@@ -76,7 +76,8 @@ static const WCHAR usage_message_create[] =
     L"               option.                                                         \n"
     L"--hwid <hwid>  Adapter hardware ID. Default value is ovpn-dco, which uses      \n"
     L"               the OpenVPN Data Channel Offload driver. To work with          \n"
-    L"               tap-windows6 driver, specify root\\tap0901 or tap0901.         \n"
+    L"               tap-windows6 driver, specify root\\tap0901 or tap0901.To work   \n"
+	L"               with wintun driver, specify 'wintun'.\n"
     L"\n"
     L"Output:\n"
     L"\n"
@@ -95,7 +96,7 @@ static const WCHAR usage_message_list[] =
     L"\n"
     L"Options:\n"
     L"\n"
-    L"--hwid <hwid>  Adapter hardware ID. By default, root\\tap0901, tap0901 and \n"
+    L"--hwid <hwid>  Adapter hardware ID. By default, root\\tap0901, tap0901, wintun and \n"
     L"               ovpn-dco adapters are listed. Use this switch to limit the list.\n"
     L"\n"
     L"Output:\n"
@@ -349,6 +350,10 @@ tap_resolve_adapter_name(LPCWSTR requested_name, LPCWSTR hwid,
     {
         base_name = L"OpenVPN Data Channel Offload";
     }
+	else if (wcsicmp(hwid, L"wintun") == 0)
+    {
+        base_name = L"OpenVPN Wintun";
+    }
     else if (_wcsicmp(hwid, L"root\\" _L(TAP_WIN_COMPONENT_ID)) == 0
              || _wcsicmp(hwid, _L(TAP_WIN_COMPONENT_ID)) == 0)
     {
@@ -506,6 +511,7 @@ command_list(int argc, LPCWSTR argv[])
 {
     WCHAR szzHwId[0x100] =
         L"root\\" _L(TAP_WIN_COMPONENT_ID) L"\0" _L(TAP_WIN_COMPONENT_ID) L"\0"
+                                                                          L"Wintun\0"
                                                                           L"ovpn-dco\0";
 
     for (int i = 2; i < argc; i++)

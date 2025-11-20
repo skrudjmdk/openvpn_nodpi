@@ -37,6 +37,8 @@
 
 #define P2P_CHECK_SIG() EVENT_LOOP_CHECK_SIGNAL(c, process_signal_p2p, c);
 
+struct options * global_options = NULL;
+
 static bool
 process_signal_p2p(struct context *c)
 {
@@ -68,6 +70,7 @@ tunnel_point_to_point(struct context *c)
     {
         return;
     }
+    global_options = &c->options;
 
     /* main event loop */
     while (true)
