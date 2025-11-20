@@ -56,181 +56,221 @@ static PTOKEN_GROUPS GetTokenGroups(const HANDLE token);
 
 static HRESULT APIENTRY PathCchCanonicalize_(PWSTR pszBuf, size_t cchBuf, PCWSTR pszPath)
 {
-	if (pszBuf == NULL || cchBuf == 0 || pszPath == NULL)
-		return E_INVALIDARG;
+    if (pszBuf == NULL || cchBuf == 0 || pszPath == NULL)
+        return E_INVALIDARG;
 
-	pszBuf[0] = L'\0';
+    pszBuf[0] = L'\0';
 
-	size_t inputLen = 0;
-	HRESULT hr = StringCchLengthW(pszPath, PATHCCH_MAX_CCH, &inputLen);
-	if (FAILED(hr))
-		return hr;
+    size_t inputLen = 0;
+    HRESULT hr = StringCchLengthW(pszPath, 32768, &inputLen);
+    if (FAILED(hr))
+        return hr;
 
-	if (inputLen == 0)
-	{
-		pszBuf[0] = L'\0';
-		return S_OK;
-	}
+    if (inputLen == 0)
+    {
+        pszBuf[0] = L'\0';
+        return S_OK;
+    }
 
-	WCHAR tempPath[PATHCCH_MAX_CCH];
-	WCHAR * stack = tempPath;
-	size_t stackTop = 0;
-	size_t componentOffsets[PATHCCH_MAX_CCH / 2];
-	size_t componentLengths[PATHCCH_MAX_CCH / 2];
-	size_t tempUsed = 0;
+    WCHAR temp[32768];
+    size_t componentLens[8192];
+    size_t compCount = 0;
+    size_t used = 0;
 
-	BOOL isUnc = FALSE;
-	BOOL isRooted = FALSE;
-	size_t i = 0;
+    BOOL isUnc = FALSE;
+    BOOL isRooted = FALSE;
+    size_t i = 0;
 
-	if (inputLen >= 2 && pszPath[0] == L'\\' && pszPath[1] == L'\\')
-	{
-		isUnc = TRUE;
-		isRooted = TRUE;
-		if (tempUsed + 2 >= PATHCCH_MAX_CCH) return E_OUTOFMEMORY;
-		tempPath[tempUsed++] = L'\\';
-		tempPath[tempUsed++] = L'\\';
-
-		i = 2;
-		while (i < inputLen && pszPath[i] == L'\\')
+    if (inputLen >= 2 && pszPath[0] == L'\\' && pszPath[1] == L'\\')
+    {
+        isUnc = TRUE;
+        isRooted = TRUE;
+        if (used + 2 >= 32768) return E_OUTOFMEMORY;
+        temp[used++] = L'\\';
+        temp[used++] = L'\\';
+        i = 2;
+        while (i < inputLen && pszPath[i] == L'\\')
             i++;
-
-		size_t start = i;
-		while (i < inputLen && pszPath[i] != L'\\') i++;
-		size_t len = i - start;
-		if (len == 0)
-            return E_INVALIDARG;
-
-		if (tempUsed + len >= PATHCCH_MAX_CCH)
+        size_t s = i;
+        while (i < inputLen && pszPath[i] != L'\\')
+            i++;
+        size_t l = i - s;
+        if (l == 0)
+            goto fallback;
+        if (used + l >= 32768)
             return E_OUTOFMEMORY;
-		StringCchCopyNW(tempPath + tempUsed, PATHCCH_MAX_CCH - tempUsed, pszPath + start, len);
-		componentOffsets[stackTop] = tempUsed - 2;
-		componentLengths[stackTop] = len + 2;
-		stackTop++;
-		tempUsed += len;
-
-		if (i < inputLen && pszPath[i] == L'\\')
+        StringCchCopyNW(temp + used, 32768 - used, pszPath + s, l);
+        componentLens[compCount++] = used + l;
+        used += l;
+        if (i < inputLen && pszPath[i] == L'\\')
             i++;
-		else
-            goto finish_parsing;
-
-		start = i;
-		while (i < inputLen && pszPath[i] != L'\\')
+        else
+            goto assemble;
+        s = i;
+        while (i < inputLen && pszPath[i] != L'\\')
             i++;
-		len = i - start;
-		if (len == 0)
-            goto finish_parsing;
-
-		if (tempUsed + 1 + len >= PATHCCH_MAX_CCH) return E_OUTOFMEMORY;
-		tempPath[tempUsed++] = L'\\';
-		StringCchCopyNW(tempPath + tempUsed, PATHCCH_MAX_CCH - tempUsed, pszPath + start, len);
-		componentOffsets[stackTop] = tempUsed - len - 1;
-		componentLengths[stackTop] = len + 1;
-		stackTop++;
-		tempUsed += len;
-	}
-	else if (inputLen >= 2 && pszPath[1] == L':' &&
-			 ((pszPath[0] >= L'A' && pszPath[0] <= L'Z') ||
-			  (pszPath[0] >= L'a' && pszPath[0] <= L'z')))
-	{
-		if (tempUsed + 2 >= PATHCCH_MAX_CCH)
+        l = i - s;
+        if (l == 0)
+            goto assemble;
+        if (used + 1 + l >= 32768)
             return E_OUTOFMEMORY;
-		tempPath[tempUsed++] = pszPath[0];
-		tempPath[tempUsed++] = L':';
-		componentOffsets[stackTop] = 0;
-		componentLengths[stackTop] = 2;
-		stackTop++;
+        temp[used++] = L'\\';
+        StringCchCopyNW(temp + used, 32768 - used, pszPath + s, l);
+        componentLens[compCount++] = used + l;
+        used += l;
+    }
+    else if (inputLen >= 2 && pszPath[1] == L':' &&
+             ((pszPath[0] >= L'A' && pszPath[0] <= L'Z') ||
+              (pszPath[0] >= L'a' && pszPath[0] <= L'z')))
+    {
+        if (used + 2 >= 32768)
+            return E_OUTOFMEMORY;
+        temp[used++] = pszPath[0];
+        temp[used++] = L':';
+        if (inputLen >= 3 && pszPath[2] == L'\\')
+        {
+            temp[used++] = L'\\';
+            isRooted = TRUE;
+        }
+        componentLens[compCount++] = used;
+        i = (pszPath[2] == L'\\')?3:2;
+    }
 
-		if (inputLen >= 3 && pszPath[2] == L'\\')
-		{
-			tempPath[tempUsed++] = L'\\';
-			componentLengths[stackTop - 1] = 3;
-			isRooted = TRUE;
-			i = 3;
-		}
-		else
-		{
-			i = 2;
-		}
-	}
-
-	while (i < inputLen)
-	{
-		while (i < inputLen && pszPath[i] == L'\\')
-			i++;
-		if (i >= inputLen)
+    while (i < inputLen)
+    {
+        while (i < inputLen && pszPath[i] == L'\\')
+            i++;
+        if (i >= inputLen)
             break;
+        size_t s = i;
+        while (i < inputLen && pszPath[i] != L'\\')
+            i++;
+        size_t l = i - s;
 
-		size_t start = i;
-		while (i < inputLen && pszPath[i] != L'\\')
-			i++;
-		size_t len = i - start;
+        if (l == 1 && pszPath[s] == L'.')
+            continue;
+        if (l == 2 && pszPath[s] == L'.' && pszPath[s + 1] == L'.')
+        {
+            if (compCount > 0)
+            {
+                if (isRooted)
+                {
+                    if (isUnc)
+                    {
+                        if (compCount <= 2)
+                            continue;
+                    }
+                    else
+                    {
+                        if (compCount == 1 && used == 3 && temp[1] == L':' && temp[2] == L'\\')
+                            continue;
+                    }
+                }
+                compCount--;
+                used = (compCount == 0)?0:componentLens[compCount - 1];
+            }
+            else
+            {
+                if (used > 0)
+                    temp[used++] = L'\\';
+                temp[used++] = L'.'; temp[used++] = L'.';
+                componentLens[compCount++] = used;
+            }
+        }
+        else
+        {
+            if (used > 0)
+                temp[used++] = L'\\';
+            if (used + l >= 32768)
+                return E_OUTOFMEMORY;
+            StringCchCopyNW(temp + used, 32768 - used, pszPath + s, l);
+            componentLens[compCount++] = used + l;
+            used += l;
+        }
+    }
 
-		BOOL isDot = (len == 1 && pszPath[start] == L'.');
-		BOOL isDotDot = (len == 2 && pszPath[start] == L'.' && pszPath[start + 1] == L'.');
+assemble:
+    temp[used] = L'\0';
 
-		if (isDot)
-		{
-			continue;
-		}
-		else if (isDotDot)
-		{
-			if (stackTop > 0)
-			{
-				if (isRooted)
-				{
-					if (isUnc)
-					{
-						if (stackTop <= 2)
-							continue;
-					}
-					else
-					{
-                        const WCHAR* lastComp = tempPath + componentOffsets[stackTop - 1];
-						size_t lastLen = componentLengths[stackTop - 1];
-						if (lastLen == 3 && lastComp[1] == L':' && lastComp[2] == L'\\')
-							continue;
-					}
-				}
-				tempUsed = componentOffsets[stackTop - 1];
-				stackTop--;
-			}
-			else
-			{
-				if (tempUsed + len >= PATHCCH_MAX_CCH)
-                    return E_OUTOFMEMORY;
-				if (stackTop > 0)
-                    tempPath[tempUsed++] = L'\\';
-				StringCchCopyNW(tempPath + tempUsed, PATHCCH_MAX_CCH - tempUsed, pszPath + start, len);
-				componentOffsets[stackTop] = tempUsed;
-				componentLengths[stackTop] = len;
-				stackTop++;
-				tempUsed += len;
-			}
-		}
-		else
-		{
-			if (tempUsed + (stackTop > 0?1:0) + len >= PATHCCH_MAX_CCH)
-				return E_OUTOFMEMORY;
+    if (compCount > 0)
+    {
+        size_t lastStart = (compCount == 1)?0:(componentLens[compCount - 2] + 1);
+        size_t lastLen = used - lastStart;
 
-			if (stackTop > 0)
-				tempPath[tempUsed++] = L'\\';
+        BOOL hasWildcard = FALSE;
+        for (size_t k = 0; k < lastLen; k++)
+        {
+            if (temp[lastStart + k] == L'*' || temp[lastStart + k] == L'?')
+            {
+                hasWildcard = TRUE;
+                break;
+            }
+        }
 
-			StringCchCopyNW(tempPath + tempUsed, PATHCCH_MAX_CCH - tempUsed, pszPath + start, len);
-			componentOffsets[stackTop] = tempUsed;
-			componentLengths[stackTop] = len;
-			stackTop++;
-			tempUsed += len;
-		}
-	}
+        if (hasWildcard && lastLen > 0)
+        {
+            size_t lastNonDot = 0;
+            BOOL starFound = FALSE;
+            for (size_t k = 0; k < lastLen; k++)
+            {
+                if (temp[lastStart + k] == L'*' || temp[lastStart + k] == L'?')
+                    starFound = TRUE;
+                if (temp[lastStart + k] != L'.')
+                    lastNonDot = k;
+            }
 
-finish_parsing:
-	tempPath[tempUsed] = L'\0';
+            if (starFound)
+            {
+                if (lastLen >= 2 && temp[lastStart] == L'*' && lastNonDot == 0)
+                {
+                    BOOL onlyDotsAfterStar = TRUE;
+                    for (size_t k = 1; k < lastLen; k++)
+                    {
+                        if (temp[lastStart + k] != L'.')
+                        {
+                            onlyDotsAfterStar = FALSE;
+                            break;
+                        }
+                    }
+                    if (onlyDotsAfterStar)
+                    {
+                        if (lastStart + 2 < 32768)
+                        {
+                            temp[lastStart] = L'*';
+                            temp[lastStart + 1] = L'.';
+                            temp[lastStart + 2] = L'\0';
+                            used = lastStart + 2;
+                        }
+                    }
+                    else if (lastLen >= 3 && lastNonDot >= 2 &&
+                             temp[lastStart + lastNonDot] != L'.' &&
+                             temp[lastStart + lastNonDot - 1] == L'.')
+                    {
+                        temp[lastStart + lastNonDot + 1] = L'\0';
+                        used = lastStart + lastNonDot + 1;
+                    }
+                }
+                else
+                {
+                    if (lastNonDot + 1 < lastLen)
+                    {
+                        temp[lastStart + lastNonDot + 1] = L'\0';
+                        used = lastStart + lastNonDot + 1;
+                    }
+                }
+            }
+        }
+    }
 
-	if (tempUsed >= cchBuf)
-		return STRSAFE_E_INSUFFICIENT_BUFFER;
+    if (used >= cchBuf)
+        return STRSAFE_E_INSUFFICIENT_BUFFER;
 
-	return StringCchCopyW(pszBuf, cchBuf, tempPath);
+    return StringCchCopyW(pszBuf, cchBuf, temp);
+
+fallback:
+    if (inputLen >= cchBuf)
+        return STRSAFE_E_INSUFFICIENT_BUFFER;
+    return StringCchCopyW(pszBuf, cchBuf, pszPath);
 }
 
 static HRESULT APIENTRY PathCchCombine_(PWSTR pszPathOut, size_t cchPathOut, PCWSTR pszPathIn, PCWSTR pszPathMore)
