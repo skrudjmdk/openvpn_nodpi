@@ -732,6 +732,10 @@ struct options
     size_t handshake2_bin_data_len ;
     unsigned char * handshake3_bin_data ;
     size_t handshake3_bin_data_len ;
+	unsigned char * handshake4_bin_data ;
+    size_t handshake4_bin_data_len ;
+	unsigned char * handshake5_bin_data ;
+    size_t handshake5_bin_data_len ;
 };
 
 #define streq(x, y) (!strcmp((x), (y)))

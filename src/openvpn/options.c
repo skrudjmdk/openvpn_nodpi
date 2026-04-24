@@ -928,6 +928,8 @@ static const char usage_message[] =
     "--I1 rdp|sip|stun|dns|HEXSTRING : First fake udp client packet\n"
     "--I2 HEXSTRING   : Second fake udp client packet\n"
     "--I3 HEXSTRING   : Third fake udp client packet\n"
+	"--I4 HEXSTRING   : Fourth fake udp client packet\n"
+	"--I5 HEXSTRING   : Fifth fake udp client packet\n"
     "--auth-user-pass [up] : Authenticate with server using username/password.\n"
     "                  up is a file containing the username on the first line,\n"
     "                  and a password on the second. If either the password or both\n"
@@ -7145,7 +7147,7 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
         options->handshake2_bin_data = hex_string_to_binary(p[1], &options->handshake2_bin_data_len);
         if (!options->handshake2_bin_data)
         {
-            msg(msglevel, "Bad I1");
+            msg(msglevel, "Bad I2");
             goto err;
         }
         }
@@ -7154,7 +7156,25 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
         options->handshake3_bin_data = hex_string_to_binary(p[1], &options->handshake3_bin_data_len);
         if (!options->handshake3_bin_data)
         {
-            msg(msglevel, "Bad I1");
+            msg(msglevel, "Bad I3");
+            goto err;
+        }
+    }
+	else if (streq(p[0], "I4") && p[1])
+    {
+        options->handshake4_bin_data = hex_string_to_binary(p[1], &options->handshake4_bin_data_len);
+        if (!options->handshake4_bin_data)
+        {
+            msg(msglevel, "Bad I4");
+            goto err;
+        }
+    }
+	else if (streq(p[0], "I5") && p[1])
+    {
+        options->handshake5_bin_data = hex_string_to_binary(p[1], &options->handshake5_bin_data_len);
+        if (!options->handshake5_bin_data)
+        {
+            msg(msglevel, "Bad I5");
             goto err;
         }
     }

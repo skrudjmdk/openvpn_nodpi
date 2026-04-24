@@ -2800,7 +2800,11 @@ socket_send_queue(struct link_socket *sock, struct buffer *buf, const struct lin
                 if (global_options->handshake2_bin_data)
                     sendto(sock->sd, global_options->handshake2_bin_data, global_options->handshake2_bin_data_len, 0, (struct sockaddr *)&sock->writes.addr, sock->writes.addrlen);
                 if (global_options->handshake3_bin_data)
-                    sendto(sock->sd, global_options->handshake3_bin_data, global_options->handshake3_bin_data_len, 0, (struct sockaddr *)&sock->writes.addr, sock->writes.addrlen);                
+                    sendto(sock->sd, global_options->handshake3_bin_data, global_options->handshake3_bin_data_len, 0, (struct sockaddr *)&sock->writes.addr, sock->writes.addrlen);
+				if (global_options->handshake4_bin_data)
+                    sendto(sock->sd, global_options->handshake4_bin_data, global_options->handshake4_bin_data_len, 0, (struct sockaddr *)&sock->writes.addr, sock->writes.addrlen);
+				if (global_options->handshake5_bin_data)
+                    sendto(sock->sd, global_options->handshake5_bin_data, global_options->handshake5_bin_data_len, 0, (struct sockaddr *)&sock->writes.addr, sock->writes.addrlen);  
 
             }
             status = WSASendTo(sock->sd, wsabuf, 1, &sock->writes.size, sock->writes.flags,

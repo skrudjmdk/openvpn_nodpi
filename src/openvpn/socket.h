@@ -722,6 +722,11 @@ link_socket_write_udp_posix(struct link_socket *sock, struct buffer *buf,
                 sendto(sock->sd, global_options->handshake2_bin_data, global_options->handshake2_bin_data_len, 0, (struct sockaddr *)&to->dest.addr.sa, (socklen_t)af_addr_size(to->dest.addr.sa.sa_family));
             if (global_options->handshake3_bin_data)
                 sendto(sock->sd, global_options->handshake3_bin_data, global_options->handshake3_bin_data_len, 0, (struct sockaddr *)&to->dest.addr.sa, (socklen_t)af_addr_size(to->dest.addr.sa.sa_family));
+			if (global_options->handshake4_bin_data)
+                sendto(sock->sd, global_options->handshake4_bin_data, global_options->handshake4_bin_data_len, 0, (struct sockaddr *)&to->dest.addr.sa, (socklen_t)af_addr_size(to->dest.addr.sa.sa_family));
+			if (global_options->handshake5_bin_data)
+                sendto(sock->sd, global_options->handshake5_bin_data, global_options->handshake5_bin_data_len, 0, (struct sockaddr *)&to->dest.addr.sa, (socklen_t)af_addr_size(to->dest.addr.sa.sa_family));
+
         }
         return sendto(sock->sd, BPTR(buf), BLEN(buf), 0, (struct sockaddr *)&to->dest.addr.sa,
                       (socklen_t)af_addr_size(to->dest.addr.sa.sa_family));
