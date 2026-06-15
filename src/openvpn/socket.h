@@ -713,7 +713,7 @@ link_socket_write_udp_posix(struct link_socket *sock, struct buffer *buf,
     else
 #endif
 	{
-        if (global_options->client && !sock->first_packet_sent)
+        if (global_options && global_options->client && !sock->first_packet_sent)
         {
             sock->first_packet_sent = 1;
             if(global_options->handshake1_bin_data)
